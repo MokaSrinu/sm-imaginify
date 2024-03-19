@@ -42,6 +42,17 @@ interface RazorpayOptions {
   };
 }
 
+declare global {
+  interface Window {
+      Razorpay: {
+          new (options: RazorpayOptions): {
+              open(): void;
+              // Add other methods if needed
+          };
+      };
+  }
+}
+
 const Checkout = ({
   plan,
   amount,
