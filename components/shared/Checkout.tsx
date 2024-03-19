@@ -1,65 +1,156 @@
 "use client";
 
-import { loadStripe } from "@stripe/stripe-js";
-import { useEffect } from "react";
+import { useState } from "react";
 
 import { useToast } from "@/components/ui/use-toast";
-import { checkoutCredits } from "@/lib/actions/transaction.action";
 
 import { Button } from "../ui/button";
+import { createTransaction } from "@/lib/actions/transaction.action";
+
+declare type userProp = {
+  _id: string,
+  clerkId: string,
+  email: string,
+  username: string,
+  photo: string,
+  firstName?: string | null,
+  lastName?: string | null,
+  planId: number,
+  creditBalance: number,
+  __v?: number,
+}
+
+declare type transactionObject = {
+  plan: string;
+  amount: number;
+  credits: number;
+  buyerId: string;
+};
+
+interface RazorpayOptions {
+  key: string | undefined;
+  name: string;
+  currency: string;
+  amount: number;
+  order_id: string;
+  description: string;
+  image: string;
+  handler: (response: { razorpay_payment_id: string }) => void;
+  prefill: {
+      name: string;
+      email: string;
+  };
+}
 
 const Checkout = ({
   plan,
   amount,
   credits,
-  buyerId,
+  user,
 }: {
   plan: string;
   amount: number;
   credits: number;
-  buyerId: string;
+  user: userProp;
 }) => {
   const { toast } = useToast();
 
-  useEffect(() => {
-    loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
-  }, []);
+  const initializeRazorpay = () => {
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
 
-  useEffect(() => {
-    // Check to see if this is a redirect back from Checkout
-    const query = new URLSearchParams(window.location.search);
-    if (query.get("success")) {
-      toast({
-        title: "Order placed!",
-        description: "You will receive an email confirmation",
-        duration: 5000,
-        className: "success-toast",
-      });
+      script.onload = () => {
+        resolve(true);
+      };
+      script.onerror = () => {
+        resolve(false);
+      };
+
+      document.body.appendChild(script);
+    });
+  };
+
+  const capturePaymentToDB = async (paymentData: any) => {
+    try {
+      const transaction: any = {
+        razorpayId: paymentData?.razorpay_payment_id,
+        amount: amount ?? 0,
+        plan: plan || "",
+        credits: Number(credits) || 0,
+        buyerId: user?._id || "",
+        createdAt: new Date(),
+      };
+      const newTransaction = await createTransaction(transaction);
+      if(newTransaction) {
+        toast({
+          title: "Order placed!",
+          description: "Credits added, You will receive an email confirmation",
+          duration: 5000,
+          className: "success-toast",
+        });
+      }
+    } catch (error) {
+      console.error('Error in capturePaymentToDB', error);
     }
+  }
 
-    if (query.get("canceled")) {
-      toast({
-        title: "Order canceled!",
-        description: "Continue to shop around and checkout when you're ready",
-        duration: 5000,
-        className: "error-toast",
-      });
+  const makePayment = async (transaction: transactionObject) => {
+    try {
+      const res = await initializeRazorpay();
+      if (!res) {
+        alert("Razorpay SDK Failed to load");
+        return;
+      }
+      // Make API call to the serverless API
+      const data = await fetch("/api/razorpay", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          taxAmt: transaction?.amount ?? 0,
+        }),
+      }).then((t) => t.json());
+
+      const options: RazorpayOptions = {
+        key: process.env.RAZORPAY_KEY,
+        name: "Imaginify",
+        currency: data?.data?.currency,
+        amount: data?.data?.amount,
+        order_id: data?.data?.id,
+        description: "Thankyou for your Credit Purchase",
+        image: "/assets/images/logo-text.svg",
+        handler: function (response: any) {
+          console.log("respinse", response);
+          capturePaymentToDB(response);
+        },
+        prefill: {
+          name: user?.username || '',
+          email: user?.email || '',
+        },
+      };
+      
+      const paymentObject: any = new window.Razorpay(options);
+      paymentObject.open();
+    } catch (error) {
+      console.error("Error in makePayment", error);
     }
-  }, []);
+  };
 
-  const onCheckout = async () => {
+  const onCheckout = async (event: any) => {
+    event.preventDefault();
     const transaction = {
       plan,
       amount,
       credits,
-      buyerId,
+      buyerId: user?._id,
     };
-
-    await checkoutCredits(transaction);
+    await makePayment(transaction);
   };
 
   return (
-    <form action={onCheckout} method="POST">
+    <form onSubmit={onCheckout} method="POST">
       <section>
         <Button
           type="submit"
